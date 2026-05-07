@@ -1,0 +1,8 @@
+4
+Rain 3 none light heavy
+Maintenance 2 yes no
+Train 2 on_time delayed
+Appointment 2 attend miss
+Rain Maintenance Train
+Maintenance Train
+Train Appointment
