@@ -1,0 +1,32 @@
+# CPT for Rain (root node - no parents)
+# P(Rain=none) P(Rain=light) P(Rain=heavy)
+Rain
+0.7 0.2 0.1
+
+# CPT for Maintenance | Rain
+# P(Maintenance=yes|Rain=none) P(Maintenance=no|Rain=none)
+# P(Maintenance=yes|Rain=light) P(Maintenance=no|Rain=light)
+# P(Maintenance=yes|Rain=heavy) P(Maintenance=no|Rain=heavy)
+Maintenance Rain
+0.4 0.6
+0.2 0.8
+0.1 0.9
+
+# CPT for Train | Rain, Maintenance
+# Rows: (Rain=none,M=yes), (Rain=none,M=no), (Rain=light,M=yes), (Rain=light,M=no), (Rain=heavy,M=yes), (Rain=heavy,M=no)
+# P(Train=on_time|...) P(Train=delayed|...)
+Train Rain Maintenance
+0.8 0.2
+0.9 0.1
+0.6 0.4
+0.7 0.3
+0.4 0.6
+0.5 0.5
+
+# CPT for Appointment | Train
+# P(Appointment=attend|Train=on_time) P(Appointment=miss|Train=on_time)
+# P(Appointment=attend|Train=delayed) P(Appointment=miss|Train=delayed)
+Appointment Train
+0.9 0.1
+0.4 0.6
+
