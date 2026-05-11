@@ -108,6 +108,75 @@ bool loadCPTs(BayesianNetwork& BN, std::string filename) {
         if (currentNode.empty() || cptRows.empty()) return;
         int idx = BN.searchVertex(BN.getVertex(currentNode));
         if (idx == -1) { std::cerr << "CPT: node not found: " << currentNode << std::endl; return; }
+
+        Node& node = BN.getVertices()[idx];
+        std::vector<Node> parents = BN.getPredecessors(node);
+        int numStates  = node.numberOfStates();
+
+        // Expected rows = product of all parent state counts (1 if no parents)
+        int expectedRows = 1;
+        for (const Node& p : parents) expectedRows *= const_cast<Node&>(p).numberOfStates();
+
+        bool ok = true;
+
+        // Build all expected parent combinations to report missing rows by name
+        auto combos = cartesianProduct(parents);
+
+        if ((int)cptRows.size() != expectedRows) {
+            std::cerr << "  [CPT WARNING] '" << currentNode << "': expected " << expectedRows
+                      << " row(s) but got " << cptRows.size() << "." << std::endl;
+            // Report which parent combinations are missing
+            for (std::size_t r = cptRows.size(); r < combos.size(); r++) {
+                std::cerr << "    Missing row for: ";
+                for (std::size_t k = 0; k < combos[r].size(); k++) {
+                    if (k) std::cerr << ", ";
+                    std::cerr << combos[r][k].first << "=" << combos[r][k].second;
+                }
+                std::cerr << std::endl;
+            }
+            ok = false;
+        }
+
+        for (std::size_t r = 0; r < cptRows.size(); r++) {
+            // Label this row with its parent combination if possible
+            std::string rowLabel = "row " + std::to_string(r+1);
+            if (r < combos.size() && !combos[r].empty()) {
+                rowLabel = "";
+                for (std::size_t k = 0; k < combos[r].size(); k++) {
+                    if (k) rowLabel += ", ";
+                    rowLabel += combos[r][k].first + "=" + combos[r][k].second;
+                }
+            }
+
+            if ((int)cptRows[r].size() != numStates) {
+                std::cerr << "  [CPT WARNING] '" << currentNode << "' (" << rowLabel << ")"
+                          << ": expected " << numStates << " value(s) but got "
+                          << cptRows[r].size() << "." << std::endl;
+                ok = false;
+            } else {
+                double sum = 0.0;
+                bool numErr = false;
+                for (const std::string& v : cptRows[r]) {
+                    try { sum += std::stod(v); }
+                    catch (...) {
+                        std::cerr << "  [CPT WARNING] '" << currentNode << "' (" << rowLabel << ")"
+                                  << ": '" << v << "' is not a valid number." << std::endl;
+                        ok = false; numErr = true;
+                    }
+                }
+                if (!numErr && std::abs(sum - 1.0) > 1e-6) {
+                    std::cerr << "  [CPT WARNING] '" << currentNode << "' (" << rowLabel << ")"
+                              << ": probabilities sum to " << std::fixed << std::setprecision(6)
+                              << sum << " (expected 1.0)." << std::endl;
+                    ok = false;
+                }
+            }
+        }
+
+        if (!ok)
+            std::cerr << "  [CPT WARNING] '" << currentNode
+                      << "' loaded with errors — inference may be incorrect." << std::endl;
+
         BN.getVertices()[idx].setConditionalProbabilityTable(cptRows);
     };
 
@@ -254,43 +323,41 @@ double enumerateAll(BayesianNetwork& BN,
                     const std::vector<std::string>& vars,
                     std::map<std::string,std::string>& assignment,
                     bool trace, int depth) {
+
+    // Base case: all variables processed → joint contribution is 1.0
+    // (every factor has already been multiplied as we descended)
     if (vars.empty()) {
-        double prob = 1.0;
-        for (auto& kv : assignment) {
-            double p = getProbability(BN, kv.first, kv.second, assignment);
-            prob *= p;
-            if (trace)
-                std::cout << std::string(depth*2,' ')
-                          << "P(" << kv.first << "=" << kv.second << "|pa) = "
-                          << std::fixed << std::setprecision(4) << p << std::endl;
-        }
         if (trace)
-            std::cout << std::string(depth*2,' ')
-                      << "→ joint = " << std::fixed << std::setprecision(8) << prob << std::endl;
-        return prob;
+            std::cout << std::string(depth*2,' ') << "→ leaf = 1.0" << std::endl;
+        return 1.0;
     }
 
     std::string Y = vars[0];
     std::vector<std::string> rest(vars.begin()+1, vars.end());
 
-    // Already assigned (evidence or query)
+    // Y is fixed (evidence or query variable): multiply its CPT factor now
     if (assignment.count(Y)) {
+        double p = getProbability(BN, Y, assignment[Y], assignment);
         if (trace)
             std::cout << std::string(depth*2,' ')
-                      << Y << " fixed = " << assignment[Y] << std::endl;
-        return enumerateAll(BN, rest, assignment, trace, depth);
+                      << "P(" << Y << "=" << assignment[Y] << "|pa) = "
+                      << std::fixed << std::setprecision(4) << p
+                      << "  [fixed]" << std::endl;
+        return p * enumerateAll(BN, rest, assignment, trace, depth+1);
     }
 
-    // Sum over unobserved hidden variable
+    // Y is hidden: sum over all its states, multiplying each CPT factor
     int idx = BN.searchVertex(BN.getVertex(Y));
     std::vector<std::string>& yStates = BN.getVertices()[idx].getStates();
     double sum = 0.0;
     for (const std::string& yVal : yStates) {
+        assignment[Y] = yVal;
+        double p = getProbability(BN, Y, yVal, assignment);
         if (trace)
             std::cout << std::string(depth*2,' ')
-                      << "∑ " << Y << "=" << yVal << std::endl;
-        assignment[Y] = yVal;
-        sum += enumerateAll(BN, rest, assignment, trace, depth+1);
+                      << "∑ P(" << Y << "=" << yVal << "|pa) = "
+                      << std::fixed << std::setprecision(4) << p << std::endl;
+        sum += p * enumerateAll(BN, rest, assignment, trace, depth+1);
         assignment.erase(Y);
     }
     return sum;
@@ -344,8 +411,17 @@ std::map<std::string,double> enumerationAsk(
     std::cout << "║  α (norm. constant) = " << std::fixed << std::setprecision(8)
               << std::setw(12) << total << "                  ║" << std::endl;
     std::cout << "╠══════════════════════════════════════════════════════╣" << std::endl;
+
+    if (total <= 0.0) {
+        std::cout << "║  [ERROR] α = 0: the CPT file is incomplete or      ║" << std::endl;
+        std::cout << "║  inconsistent for this combination of evidence.    ║" << std::endl;
+        std::cout << "║  Check that all required rows exist in the CPT.   ║" << std::endl;
+        std::cout << "╚══════════════════════════════════════════════════════╝" << std::endl;
+        return dist;
+    }
+
     for (auto& kv : dist) {
-        kv.second = (total > 0) ? kv.second / total : 0.0;
+        kv.second = kv.second / total;
         std::cout << "║  P(" << queryVar << "=" << std::left << std::setw(12) << kv.first
                   << " |e) = " << std::right << std::fixed << std::setprecision(6)
                   << std::setw(10) << kv.second << "             ║" << std::endl;
@@ -389,38 +465,132 @@ int main(int argc, char* argv[]) {
     std::cout << "══════════════════════════════════════════════════════" << std::endl;
     displayAllCPTs(BN);
 
-    // ── STEP 4: Inference by enumeration 
+    // ── STEP 4: Interactive inference loop
     std::cout << "\n══════════════════════════════════════════════════════" << std::endl;
-    std::cout << "  STEP 4 – Inference by Enumeration" << std::endl;
+    std::cout << "  STEP 4 – Inference by Enumeration (interactive)" << std::endl;
+    std::cout << "══════════════════════════════════════════════════════" << std::endl;
+    std::cout << "  Format:  P(QueryVar | Var1=val1, Var2=val2)" << std::endl;
+    std::cout << "  No evidence: P(QueryVar)" << std::endl;
+    std::cout << "  Add 'trace' at the end to see step-by-step detail." << std::endl;
+    std::cout << "  Type 'exit' to quit." << std::endl;
     std::cout << "══════════════════════════════════════════════════════" << std::endl;
 
-    // Query 1: P(Appointment | Train=delayed)
-    {
-        std::map<std::string,std::string> ev;
-        ev["Train"] = "delayed";
-        enumerationAsk(BN, "Appointment", ev, false);
+    std::string line;
+    while (true) {
+        std::cout << "\n> ";
+        if (!std::getline(std::cin, line)) break;
+
+        // Trim whitespace
+        while (!line.empty() && std::isspace((unsigned char)line.front())) line.erase(line.begin());
+        while (!line.empty() && std::isspace((unsigned char)line.back()))  line.pop_back();
+
+        if (line.empty()) continue;
+        if (line == "exit" || line == "quit") break;
+
+        // Detect optional 'trace' flag at the end
+        bool trace = false;
+        std::string lower = line;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower.size() >= 5 && lower.substr(lower.size() - 5) == "trace") {
+            trace = true;
+            line = line.substr(0, line.size() - 5);
+            while (!line.empty() && std::isspace((unsigned char)line.back())) line.pop_back();
+        }
+
+        // ── Parse P(QueryVar | Var1=val1, Var2=val2)
+        // Find opening and closing parentheses
+        std::size_t pOpen  = line.find('(');
+        std::size_t pClose = line.rfind(')');
+        if (pOpen == std::string::npos || pClose == std::string::npos || pClose < pOpen) {
+            std::cout << "  [!] Bad format. Expected: P(QueryVar | Var=val, ...)" << std::endl;
+            continue;
+        }
+
+        std::string inner = line.substr(pOpen + 1, pClose - pOpen - 1);
+
+        // Split on '|' to separate query variable from evidence
+        std::string queryVar;
+        std::map<std::string, std::string> evidence;
+
+        std::size_t pipe = inner.find('|');
+        if (pipe == std::string::npos) {
+            // No evidence: P(QueryVar)
+            queryVar = inner;
+            while (!queryVar.empty() && std::isspace((unsigned char)queryVar.front())) queryVar.erase(queryVar.begin());
+            while (!queryVar.empty() && std::isspace((unsigned char)queryVar.back()))  queryVar.pop_back();
+        } else {
+            // With evidence: P(QueryVar | Var1=val1, Var2=val2)
+            queryVar = inner.substr(0, pipe);
+            while (!queryVar.empty() && std::isspace((unsigned char)queryVar.front())) queryVar.erase(queryVar.begin());
+            while (!queryVar.empty() && std::isspace((unsigned char)queryVar.back()))  queryVar.pop_back();
+
+            std::string evStr = inner.substr(pipe + 1);
+            // Split evidence on commas
+            std::istringstream evStream(evStr);
+            std::string token;
+            bool parseError = false;
+            while (std::getline(evStream, token, ',')) {
+                // Trim token
+                while (!token.empty() && std::isspace((unsigned char)token.front())) token.erase(token.begin());
+                while (!token.empty() && std::isspace((unsigned char)token.back()))  token.pop_back();
+                if (token.empty()) continue;
+
+                // Split on '='
+                std::size_t eq = token.find('=');
+                if (eq == std::string::npos) {
+                    std::cout << "  [!] Evidence must be in 'Var=value' format. Got: '" << token << "'" << std::endl;
+                    parseError = true;
+                    break;
+                }
+                std::string eVar = token.substr(0, eq);
+                std::string eVal = token.substr(eq + 1);
+                while (!eVar.empty() && std::isspace((unsigned char)eVar.back()))   eVar.pop_back();
+                while (!eVal.empty() && std::isspace((unsigned char)eVal.front()))  eVal.erase(eVal.begin());
+                evidence[eVar] = eVal;
+            }
+            if (parseError) continue;
+        }
+
+        // ── Validate query variable exists in the network
+        if (BN.getVertex(queryVar).isEmpty()) {
+            std::cout << "  [!] Variable '" << queryVar << "' not found in the network." << std::endl;
+            std::cout << "  Available variables: ";
+            for (std::size_t i = 0; i < BN.getVertices().size(); i++) {
+                if (i) std::cout << ", ";
+                std::cout << BN.getVertices()[i].getName();
+            }
+            std::cout << std::endl;
+            continue;
+        }
+
+        // ── Validate each evidence variable and its value
+        bool evError = false;
+        for (auto& kv : evidence) {
+            Node evNode = BN.getVertex(kv.first);
+            if (evNode.isEmpty()) {
+                std::cout << "  [!] Evidence variable '" << kv.first << "' not found in the network." << std::endl;
+                evError = true; break;
+            }
+            int idx = BN.searchVertex(evNode);
+            if (BN.getVertices()[idx].searchState(kv.second) == -1) {
+                std::cout << "  [!] State '" << kv.second << "' is not valid for variable '" << kv.first << "'." << std::endl;
+                std::cout << "  Valid states: ";
+                auto& st = BN.getVertices()[idx].getStates();
+                for (std::size_t i = 0; i < st.size(); i++) { if (i) std::cout << ", "; std::cout << st[i]; }
+                std::cout << std::endl;
+                evError = true; break;
+            }
+            if (kv.first == queryVar) {
+                std::cout << "  [!] Query variable '" << queryVar << "' cannot also be evidence." << std::endl;
+                evError = true; break;
+            }
+        }
+        if (evError) continue;
+
+        // ── Run inference
+        enumerationAsk(BN, queryVar, evidence, trace);
     }
 
-    // Query 2: P(Train | Rain=heavy, Maintenance=yes) — with trace
-    {
-        std::map<std::string,std::string> ev;
-        ev["Rain"]        = "heavy";
-        ev["Maintenance"] = "yes";
-        enumerationAsk(BN, "Train", ev, true);
-    }
-
-    // Query 3: P(Appointment) — prior (no evidence)
-    {
-        std::map<std::string,std::string> ev;
-        enumerationAsk(BN, "Appointment", ev, false);
-    }
-
-    // Query 4: P(Rain | Appointment=miss) — backwards reasoning
-    {
-        std::map<std::string,std::string> ev;
-        ev["Appointment"] = "miss";
-        enumerationAsk(BN, "Rain", ev, false);
-    }
-
+    std::cout << "\n  Goodbye." << std::endl;
     return EXIT_SUCCESS;
 }
